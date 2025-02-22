@@ -6,9 +6,9 @@
 // @description:de  Ein Skript, um die "Zum Kanal" Funktion bei allen Livechat-Kommentaren auf YouTube wiederherzustellen.
 // @author          Zerody
 // @icon            https://www.google.com/s2/favicons?domain=youtube.com
-// @updateURL       https://github.com/zerodytrash/YouTube-Livechat-GoToChannel/raw/master/YouTube%20Livechat%20Channel%20Resolver.user.js
-// @downloadURL     https://github.com/zerodytrash/YouTube-Livechat-GoToChannel/raw/master/YouTube%20Livechat%20Channel%20Resolver.user.js
-// @supportURL      https://github.com/zerodytrash/YouTube-Livechat-GoToChannel/issues
+// @updateURL       https://github.com/RetiredQQ/YouTube-Livechat-GoToChannel/raw/master/YouTube%20Livechat%20Channel%20Resolver.user.js
+// @downloadURL     https://github.com/RetiredQQ/YouTube-Livechat-GoToChannel/raw/master/YouTube%20Livechat%20Channel%20Resolver.user.js
+// @supportURL      https://github.com/RetiredQQ/YouTube-Livechat-GoToChannel/issues
 // @license         MIT
 // @match           https://www.youtube.com/*
 // @grant           none
