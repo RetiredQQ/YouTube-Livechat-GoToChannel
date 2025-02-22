@@ -1,10 +1,10 @@
 // ==UserScript==
 // @name            YouTube Livechat GoToChannel
-// @namespace       https://github.com/zerodytrash/YouTube-Livechat-GoToChannel
-// @version         0.9
-// @description     A simple script to restore the "Go To Channel" option on any livechat comment on YouTube.
-// @description:de  Ein einfaches script um die "Zum Kanal" Funktion bei allen Livechat-Kommentaren auf YouTube wiederherzustellen.
-// @author          Zerody (https://github.com/zerodytrash)
+// @namespace       https://github.com/RetiredQQ/YouTube-Livechat-GoToChannel
+// @version         1.1
+// @description     A script to restore the "Go To Channel" option on any live chat comment on YouTube.
+// @description:de  Ein Skript, um die "Zum Kanal" Funktion bei allen Livechat-Kommentaren auf YouTube wiederherzustellen.
+// @author          Zerody
 // @icon            https://www.google.com/s2/favicons?domain=youtube.com
 // @updateURL       https://github.com/zerodytrash/YouTube-Livechat-GoToChannel/raw/master/YouTube%20Livechat%20Channel%20Resolver.user.js
 // @downloadURL     https://github.com/zerodytrash/YouTube-Livechat-GoToChannel/raw/master/YouTube%20Livechat%20Channel%20Resolver.user.js
@@ -19,256 +19,269 @@
 // @compatible      safari Safari + Tampermonkey or Violentmonkey
 // ==/UserScript==
 
-var main = function() {
+(function() {
+    'use strict';
 
-    // channel-id <=> contextMenuEndpointParams
-    var mappedChannelIds = []
+    const main = () => {
+        let mappedChannelIds = [];
 
-    // backup the original XMLHttpRequest open function
-    var originalRequestOpen = XMLHttpRequest.prototype.open;
+        // Backup original functions
+        const originalRequestOpen = XMLHttpRequest.prototype.open;
+        const originalFetch = window.fetch;
+        const trustedTypePolicy = window.trustedTypes
+            ? window.trustedTypes.createPolicy("ytgtc_policy", { createHTML: (input) => input, createScript: (input) => input })
+            : { createHTML: (input) => input, createScript: (input) => input };
 
-    // backup the original fetch function
-    var originalFetch = window.fetch;
+        // Helper to intercept and modify responses
+        const responseProxy = (callback) => {
+            // Intercept XMLHttpRequest
+            XMLHttpRequest.prototype.open = function(method, url, async, user, password) {
+                this._method = method;
+                this._url = url;
+                this._async = async;
+                this._user = user;
+                this._password = password;
+                return originalRequestOpen.apply(this, arguments);
+            };
 
-    // helper functions used to intercept and modify youtube api responses
-    var responseProxy = function(callback) {
-        XMLHttpRequest.prototype.open = function() {
-            this.addEventListener("readystatechange", function(event) {
+            XMLHttpRequest.prototype.send = function(body) {
+                this.addEventListener("readystatechange", function() {
+                    if (this.readyState === 4) { // DONE
+                        try {
+                            const responseType = this.responseType;
+                            const responseURL = this.responseURL;
+                            let modifiedResponse = null;
 
-                if (this.readyState === 4) {
+                            if (responseType === '' || responseType === 'text') {
+                                // Safe to access responseText
+                                modifiedResponse = callback(responseURL, this.responseText);
+                                if (modifiedResponse && modifiedResponse !== this.responseText) {
+                                    // Redefine response and responseText if modified
+                                    Object.defineProperty(this, "response", { writable: true });
+                                    Object.defineProperty(this, "responseText", { writable: true });
+                                    this.response = modifiedResponse;
+                                    this.responseText = modifiedResponse;
+                                }
+                            } else if (responseType === 'json') {
+                                // Cannot access responseText, but can modify 'response' directly
+                                const originalResponse = this.response;
+                                if (originalResponse && typeof originalResponse === 'object') {
+                                    const modifiedResponseObject = callback(responseURL, JSON.stringify(originalResponse));
+                                    if (modifiedResponseObject && modifiedResponseObject !== JSON.stringify(originalResponse)) {
+                                        // Parse the modified response back into object
+                                        const newResponse = JSON.parse(modifiedResponseObject);
+                                        // Redefine response to the new object
+                                        Object.defineProperty(this, "response", { writable: true });
+                                        this.response = newResponse;
+                                    }
+                                }
+                            }
+                            // For other responseTypes, do nothing
+                        } catch (ex) {
+                            console.error("YouTube Livechat Channel Resolver - Exception in XMLHttpRequest handler:", ex);
+                        }
+                    }
+                });
+                return originalFetch.apply(this, arguments);
+            };
 
-                    var response = callback(this.responseURL, event.target.responseText);
+            // Intercept Fetch API
+            window.fetch = async (...args) => {
+                const response = await originalFetch(...args);
+                const clonedResponse = response.clone();
 
-                    // re-define response content properties and remove "read-only" flags
-                    Object.defineProperty(this, "response", {writable: true});
-                    Object.defineProperty(this, "responseText", {writable: true});
+                let modifiedResponseText = null;
 
-                    this.response = response;
-                    this.responseText = response;
+                try {
+                    const contentType = clonedResponse.headers.get("content-type");
+                    if (contentType && contentType.includes("application/json")) {
+                        const json = await clonedResponse.json();
+                        const originalJsonString = JSON.stringify(json);
+                        modifiedResponseText = callback(response.url, originalJsonString);
+                    }
+                } catch (e) {
+                    // If response is not JSON, do nothing
+                    return response;
                 }
-            });
 
-            return originalRequestOpen.apply(this, arguments);
+                if (modifiedResponseText && modifiedResponseText !== JSON.stringify(await response.clone().json())) {
+                    return new Response(modifiedResponseText, {
+                        status: response.status,
+                        statusText: response.statusText,
+                        headers: response.headers
+                    });
+                } else {
+                    return response;
+                }
+            };
         };
 
-        // since july 2020 YouTube uses the Fetch-API to retrieve context menu items
-        window.fetch = (...args) => (async(args) => {
-            var result = await originalFetch(...args);
-            var json = await result.json();
+        // Extract Channel IDs from chat actions
+        const extractCommentActionChannelId = (action) => {
+            if (action.replayChatItemAction) {
+                action.replayChatItemAction.actions.forEach(extractCommentActionChannelId);
+                return;
+            }
 
-            // returns the original result if the request fails
-            if(json === null) return result;
+            if (!action.addChatItemAction) return;
 
-            var responseText = JSON.stringify(json);
-            var responseTextModified = callback(result.url, responseText);
+            const messageItem = action.addChatItemAction.item;
+            const mappedItem = messageItem.liveChatPaidMessageRenderer ||
+                               messageItem.liveChatTextMessageRenderer ||
+                               messageItem.liveChatPaidStickerRenderer ||
+                               messageItem.liveChatMembershipItemRenderer ||
+                               (messageItem.liveChatAutoModMessageRenderer?.autoModeratedItem.liveChatTextMessageRenderer);
 
-            result.json = function() {
-                return new Promise(function(resolve, reject) {
-                    resolve(JSON.parse(responseTextModified));
-                })
-            };
+            if (!mappedItem || !mappedItem.authorExternalChannelId) return;
 
-            result.text = function() {
-                return new Promise(function(resolve, reject) {
-                    resolve(responseTextModified);
-                })
-            };
+            // Maintain a maximum of 5000 entries
+            if (mappedChannelIds.length > 5000) mappedChannelIds.shift();
 
-            return result;
-        })(args);
-    };
+            mappedChannelIds.push({
+                channelId: mappedItem.authorExternalChannelId,
+                commentId: mappedItem.id,
+                contextMenuEndpointParams: mappedItem.contextMenuEndpoint?.liveChatItemContextMenuEndpoint?.params || ""
+            });
+        };
 
-    var extractCommentActionChannelId = function(action) {
-        if (action.replayChatItemAction) {
-            action.replayChatItemAction.actions.forEach(extractCommentActionChannelId);
-            return;
-        }
+        // Extract Channel IDs from API response
+        const extractAuthorExternalChannelIds = (chatData) => {
+            const availableCommentActions = chatData.continuationContents
+                ? chatData.continuationContents.liveChatContinuation.actions
+                : chatData.contents?.liveChatRenderer?.actions;
 
-        if(!action.addChatItemAction) return;
-        
-        var messageItem = action.addChatItemAction.item;
-        var mappedItem = messageItem.liveChatPaidMessageRenderer ?? messageItem.liveChatTextMessageRenderer
-                ?? messageItem.liveChatPaidStickerRenderer ?? messageItem.liveChatMembershipItemRenderer
-                ?? messageItem.liveChatAutoModMessageRenderer?.autoModeratedItem.liveChatTextMessageRenderer;
-        if(!mappedItem || !mappedItem.authorExternalChannelId) return;
+            if (!availableCommentActions || !Array.isArray(availableCommentActions)) return;
 
-        // remove old entries
-        if(mappedChannelIds.length > 5000) mappedChannelIds.shift();
+            availableCommentActions.forEach(extractCommentActionChannelId);
+            console.info(`${mappedChannelIds.length} Channel-IDs mapped!`);
+        };
 
-        mappedChannelIds.push({
-            channelId: mappedItem.authorExternalChannelId,
-            commentId: mappedItem.id,
-            contextMenuEndpointParams: mappedItem.contextMenuEndpoint.liveChatItemContextMenuEndpoint.params
-        });
-    }
-
-    var extractAuthorExternalChannelIds = function(chatData) {
-        // lets deal with this stupid json object...
-        var availableCommentActions = chatData.continuationContents ? chatData.continuationContents.liveChatContinuation.actions : chatData.contents.liveChatRenderer.actions;
-        if(!availableCommentActions || !Array.isArray(availableCommentActions)) return;
-
-        availableCommentActions.forEach(extractCommentActionChannelId);
-
-        console.info(mappedChannelIds.length + " Channel-IDs mapped!");
-    }
-
-    var generateMenuLinkItem = function(url, text, icon) {
-        return {
+        // Generate a menu item for the context menu
+        const generateMenuLinkItem = (url, text, icon) => ({
             "menuNavigationItemRenderer": {
-                "text": {
-                    "runs": [
-                        {
-                            "text": text
+                "text": { "runs": [{ "text": text }] },
+                "icon": { "iconType": icon },
+                "navigationEndpoint": {
+                    "commandMetadata": {
+                        "webCommandMetadata": {
+                            "url": url,
+                            "webPageType": "WEB_PAGE_TYPE_UNKNOWN",
+                            "rootVe": 0
                         }
-                    ]
-                },
-                "icon": {
-                    "iconType": icon
-                },
-                "navigationEndpoint":{
-                    "urlEndpoint":{
-                        "url": url,
-                        "target": "TARGET_NEW_WINDOW"
                     }
                 }
             }
-        }
-    }
+        });
 
-    var appendAdditionalChannelContextItems = function(reqUrl, response) {
-        // parse the url to get the "params" variable used to identitfy the mapped channel id
-        var urlParams = new URLSearchParams(new URL(reqUrl).search);
-        var params = urlParams.get("params");
-        var mappedChannel = mappedChannelIds.find(x => x.contextMenuEndpointParams === params);
+        // Append additional items to the context menu
+        const appendAdditionalChannelContextItems = (reqUrl, response) => {
+            try {
+                const urlParams = new URLSearchParams(new URL(reqUrl).search);
+                const params = urlParams.get("params");
+                const mappedChannel = mappedChannelIds.find(x => x.contextMenuEndpointParams === params);
 
-        // in some cases, no channel id is available
-        if(!mappedChannel) {
-            console.error("Endpoint Params " + params + " not mapped!");
+                if (!mappedChannel) {
+                    console.error(`Endpoint Params ${params} not mapped!`);
+                    return response;
+                }
 
-            // returning the unmodified context item list
-            return response;
-        }
+                const responseData = JSON.parse(response);
+                const mainMenuRendererNode = responseData.liveChatItemContextMenuSupportedRenderers?.menuRenderer;
 
-        // parse the orignal server response
-        var responseData = JSON.parse(response);
+                if (!mainMenuRendererNode || !mainMenuRendererNode.items) {
+                    console.error("Invalid structure for liveChatItemContextMenuSupportedRenderers.menuRenderer");
+                    return response;
+                }
 
-        // legacy stuff: the "response"-attribute has been removed since the fetch-api update. But we should keep this for backward compatibility.
-        var mainMenuRendererNode = (responseData.response ? responseData.response : responseData).liveChatItemContextMenuSupportedRenderers;
-        // remove link channel for moderator
-        if(mainMenuRendererNode.menuRenderer.items[0].menuNavigationItemRenderer?.icon.iconType == "ACCOUNT_CIRCLE") mainMenuRendererNode.menuRenderer.items.shift();
+                // Remove the first item if it's the 'Account Circle' (typically for moderators)
+                if (mainMenuRendererNode.items[0]?.menuNavigationItemRenderer?.icon?.iconType === "ACCOUNT_CIRCLE") {
+                    mainMenuRendererNode.items.shift();
+                }
 
-        // append social blade statistic shortcut
-        mainMenuRendererNode.menuRenderer.items.unshift(generateMenuLinkItem("https://socialblade.com/youtube/channel/" + mappedChannel.channelId, "Socialblade Statistic", "MONETIZATION_ON"));
-        
-        // append social blade statistic shortcut
-        mainMenuRendererNode.menuRenderer.items.unshift(generateMenuLinkItem("https://playboard.co/en/channel/" + mappedChannel.channelId, "PlayBoard Statistic", "INSIGHTS"));
-      
-        // append visit channel menu item
-        mainMenuRendererNode.menuRenderer.items.unshift(generateMenuLinkItem("/channel/" + mappedChannel.channelId, "Visit Channel", "ACCOUNT_CIRCLE"));
-        
-        // re-stringify json object to overwrite the original server response
-        response = JSON.stringify(responseData);
+                // Prepend new menu items
+                mainMenuRendererNode.items.unshift(
+                    generateMenuLinkItem(`https://socialblade.com/youtube/channel/${mappedChannel.channelId}`, "Socialblade Statistic", "MONETIZATION_ON"),
+                    generateMenuLinkItem(`https://playboard.co/en/channel/${mappedChannel.channelId}`, "PlayBoard Statistic", "INSIGHTS"),
+                    generateMenuLinkItem(`/channel/${mappedChannel.channelId}`, "Visit Channel", "ACCOUNT_CIRCLE")
+                );
 
-        return response;
-    }
-
-
-    // proxy function for processing and editing the api responses
-    responseProxy(function(reqUrl, responseText) {
-        try {
-            // we will extract the channel-ids from the "get_live_chat" response
-            // old api endpoint:
-            if(reqUrl.startsWith("https://www.youtube.com/live_chat/get_live_chat?")) extractAuthorExternalChannelIds(JSON.parse(responseText).response);
-            if(reqUrl.startsWith("https://www.youtube.com/live_chat/get_live_chat_replay?")) extractAuthorExternalChannelIds(JSON.parse(responseText).response);
-
-            // new api endpoint (since july 2020):
-            if(reqUrl.startsWith("https://www.youtube.com/youtubei/v1/live_chat/get_live_chat?")) extractAuthorExternalChannelIds(JSON.parse(responseText));
-            if(reqUrl.startsWith("https://www.youtube.com/youtubei/v1/live_chat/get_live_chat_replay?")) extractAuthorExternalChannelIds(JSON.parse(responseText));
-
-            // when you open the context menu one of the following requests will be fired to load the context menu options. We will modify the response to append additional items
-            // old api endpoint:
-            if(reqUrl.startsWith("https://www.youtube.com/live_chat/get_live_chat_item_context_menu?")) return appendAdditionalChannelContextItems(reqUrl, responseText);
-
-            // new api endpoint (since june 2020):
-            if(reqUrl.startsWith("https://www.youtube.com/youtubei/v1/live_chat/get_item_context_menu?")) return appendAdditionalChannelContextItems(reqUrl, responseText);
-
-        } catch(ex) {
-            console.error("YouTube Livechat Channel Resolver - Exception!!!:", ex);
-        }
-
-        // return the original response by default
-        return responseText;
-    });
-
-
-    // hijack youtube inital variable data from page source and rename it before it gets overwritten by youtube
-    // idk how to do it better...
-    var scripts = document.getElementsByTagName("script");
-    for (var script of scripts) {
-        if(script.text.indexOf("window[\"ytInitialData\"]") >= 0) {
-            window.eval(script.text.replace("ytInitialData", "ytInitialData_original"));
-        }
-    }
-
-    // process chat comments from inital data
-    if(window.ytInitialData_original) extractAuthorExternalChannelIds(window.ytInitialData_original);
-
-}
-
-// Just a trick to get around the sandbox restrictions in Firefox / Greasemonkey
-// The Greasemonkey security model does not allow to execute code directly in the context of the website
-// Unfortunately, we need this to manipulate the XmlHttpRequest object
-// UnsafeWindow does not work in this case. See https://wiki.greasespot.net/UnsafeWindow
-// So we have to inject the script directly into the website
-var injectScript = function(frameWindow) {
-
-    console.info("Run Fury, run!");
-
-    frameWindow.eval("("+ main.toString() +")();");
-}
-
-// We need this to detect the chat frame in firefox
-// Greasemonkey does not execute the script directly in iframes
-// See https://github.com/greasemonkey/greasemonkey/issues/2574
-var retrieveChatFrameWindow = function() {
-
-    // Chrome (Tampermonkey) will execute the userscript directly into the iframe, thats fine.
-    if(window.location.pathname === "/live_chat" || window.location.pathname === "/live_chat_replay") return window;
-
-    // Unfortunately, Firefox (Greasemonkey) runs the script only in the main window.
-    // We have to navigate into the correct chat iframe
-    for (var i = 0; i < window.frames.length; i++) {
-        try {
-            if(window.frames[i].location) {
-                var pathname = window.frames[i].location.pathname;
-                if(pathname === "/live_chat" || pathname === "/live_chat_replay") return frames[i];
+                // Return the modified response
+                return JSON.stringify(responseData);
+            } catch (ex) {
+                console.error("YouTube Livechat Channel Resolver - Exception in appendAdditionalChannelContextItems:", ex);
+                return response;
             }
-        } catch(ex) { }
-    }
-}
+        };
 
-// Chrome => Instant execution
-// Firefox => Retry until the chat frame is loaded
-var tryBrowserIndependentExecution = function() {
+        // Proxy to process and edit API responses
+        responseProxy((reqUrl, responseText) => {
+            try {
+                if (reqUrl.startsWith("https://www.youtube.com/youtubei/v1/live_chat/get_live_chat")) {
+                    const jsonResponse = JSON.parse(responseText);
+                    extractAuthorExternalChannelIds(jsonResponse);
+                }
 
-    var destinationFrameWindow = retrieveChatFrameWindow();
+                if (reqUrl.startsWith("https://www.youtube.com/youtubei/v1/live_chat/get_live_chat_replay")) {
+                    const jsonResponse = JSON.parse(responseText);
+                    extractAuthorExternalChannelIds(jsonResponse);
+                }
 
-    // window found & ready?
-    if(!destinationFrameWindow || !destinationFrameWindow.document || destinationFrameWindow.document.readyState != "complete") {
-        setTimeout(tryBrowserIndependentExecution, 1000);
-        return;
-    }
+                if (reqUrl.startsWith("https://www.youtube.com/youtubei/v1/live_chat/get_item_context_menu")) {
+                    return appendAdditionalChannelContextItems(reqUrl, responseText);
+                }
 
-    // script already injected?
-    if(destinationFrameWindow.channelResolverInitialized) return;
+            } catch (ex) {
+                console.error("YouTube Livechat Channel Resolver - Exception in responseProxy:", ex);
+            }
 
-    // Inject main script
-    injectScript(destinationFrameWindow);
+            return responseText;
+        });
 
-    // Flag window as initalizied to prevent mutiple executions
-    destinationFrameWindow.channelResolverInitialized = true;
-}
+        // Inject the script into the page context
+        const injectScript = (frameWindow) => {
+            console.info("YouTube Livechat GoToChannel script injected.");
 
-'use strict';
+            frameWindow.eval(trustedTypePolicy.createScript(`(${main.toString()})();`));
+        };
 
-tryBrowserIndependentExecution();
+        // Retrieve the chat frame window
+        const retrieveChatFrameWindow = () => {
+            if (window.location.pathname === "/live_chat" || window.location.pathname === "/live_chat_replay") {
+                return window;
+            }
+
+            for (let i = 0; i < window.frames.length; i++) {
+                try {
+                    const framePath = window.frames[i].location.pathname;
+                    if (framePath === "/live_chat" || framePath === "/live_chat_replay") {
+                        return window.frames[i];
+                    }
+                } catch (ex) {
+                    // Ignore cross-origin frames
+                }
+            }
+            return null;
+        };
+
+        // Execute the injection process
+        const tryBrowserIndependentExecution = () => {
+            const destinationFrameWindow = retrieveChatFrameWindow();
+
+            if (!destinationFrameWindow || !destinationFrameWindow.document || destinationFrameWindow.document.readyState !== "complete") {
+                setTimeout(tryBrowserIndependentExecution, 1000);
+                return;
+            }
+
+            if (destinationFrameWindow.channelResolverInitialized) return;
+
+            injectScript(destinationFrameWindow);
+            destinationFrameWindow.channelResolverInitialized = true;
+        };
+
+        // Start the injection process
+        tryBrowserIndependentExecution();
+    };
+
+    // Initialize the main function
+    main();
+})();
